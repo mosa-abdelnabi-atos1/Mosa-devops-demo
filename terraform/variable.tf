@@ -5,7 +5,7 @@ variable "project_name" {
 
 variable "aws_region" {
   type    = string
-  default = "us-west-2"
+  default = "us-east-2"
 }
 
 variable "environment" {
