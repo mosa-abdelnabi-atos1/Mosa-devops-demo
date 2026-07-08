@@ -43,32 +43,36 @@ jobs:
         env:
           IMAGE: ${{ steps.push-image.outputs.image }}
         run: |
-          # Get current task definition and update the container image
+          # Get current task definition ARN
           TASK_DEF_ARN=$(aws ecs describe-services \
             --cluster ${{ vars.ECS_CLUSTER }} \
             --services ${{ vars.ECS_SERVICE }} \
             --query 'services[0].taskDefinition' \
             --output text)
 
-          NEW_TASK_DEF=$(aws ecs describe-task-definition \
+          # Fetch task def, update image, strip read-only fields, save to file
+          aws ecs describe-task-definition \
             --task-definition $TASK_DEF_ARN \
             --query taskDefinition \
             --output json | \
             jq --arg IMAGE "$IMAGE" \
               '.containerDefinitions[0].image = $IMAGE |
-               del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+               del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+            > new-task-def.json
 
-          NEW_TASK_DEF_ARN=$(echo "$NEW_TASK_DEF" | \
-            aws ecs register-task-definition \
-              --cli-input-json file:///dev/stdin \
-              --query 'taskDefinition.taskDefinitionArn' \
-              --output text)
+          # Register the new task definition revision
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
 
+          # Update service to use the new revision
           aws ecs update-service \
             --cluster ${{ vars.ECS_CLUSTER }} \
             --service ${{ vars.ECS_SERVICE }} \
             --task-definition $NEW_TASK_DEF_ARN
 
+          # Wait for the service to stabilize
           aws ecs wait services-stable \
             --cluster ${{ vars.ECS_CLUSTER }} \
             --services ${{ vars.ECS_SERVICE }}
