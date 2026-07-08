@@ -39,31 +39,38 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: Download current task definition
+      - name: Deploy to ECS with updated task definition
+        env:
+          IMAGE: ${{ steps.push-image.outputs.image }}
         run: |
+          # Get current task definition and update the container image
           TASK_DEF_ARN=$(aws ecs describe-services \
             --cluster ${{ vars.ECS_CLUSTER }} \
             --services ${{ vars.ECS_SERVICE }} \
-            --region ${{ vars.AWS_REGION }} \
             --query 'services[0].taskDefinition' \
             --output text)
-          aws ecs describe-task-definition \
+
+          NEW_TASK_DEF=$(aws ecs describe-task-definition \
             --task-definition $TASK_DEF_ARN \
             --query taskDefinition \
-            --output json > task-def.json
+            --output json | \
+            jq --arg IMAGE "$IMAGE" \
+              '.containerDefinitions[0].image = $IMAGE |
+               del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
 
-      - name: Render new task definition with updated image
-        id: task-def
-        uses: aws-actions/amazon-ecs-render-task-def@v1
-        with:
-          task-definition: task-def.json
-          container-name: mosa-hello-demo
-          image: ${{ steps.push-image.outputs.image }}
+          NEW_TASK_DEF_ARN=$(echo "$NEW_TASK_DEF" | \
+            aws ecs register-task-definition \
+              --cli-input-json file:///dev/stdin \
+              --query 'taskDefinition.taskDefinitionArn' \
+              --output text)
 
-      - name: Deploy to ECS
-        uses: aws-actions/amazon-ecs-deploy-task-def@v2
-        with:
-          task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: ${{ vars.ECS_SERVICE }}
-          cluster: ${{ vars.ECS_CLUSTER }}
-          wait-for-service-stability: true
+          aws ecs update-service \
+            --cluster ${{ vars.ECS_CLUSTER }} \
+            --service ${{ vars.ECS_SERVICE }} \
+            --task-definition $NEW_TASK_DEF_ARN
+
+          aws ecs wait services-stable \
+            --cluster ${{ vars.ECS_CLUSTER }} \
+            --services ${{ vars.ECS_SERVICE }}
+
+          echo "Deployment complete and service is stable."
